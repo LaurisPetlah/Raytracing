@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    
+    <link rel='stylesheet' type='text/css' media='screen' href='reset.css'>
+    <title>Ray Tracing - Lauris Petlah</title>
+</head>
+
+<body>
+    <canvas style="background-color: black;width: 480px; height: 480px;display: block;margin:auto"></canvas>
+    <div style="margin: auto; width: 480px;">
+        <h1 style="line-height: 16px;">Ray tracing demo</h1>
+        <p>A basic ray tracing engine built in HTML and JavaScript. Each pixel is calculated based on a recursive ray trace algorithm which fires a ray until contact is made, and fires another set of rays from the contact point. Doing this recursively multiple times with different parameters can give Lambertian shadows, and Specular reflections. On close inspection one can see several interesting properties: reflections within reflections, shadows within shadows and compounding reflections.
+        </p>
+        <p>-Lauris Petlah</p>
+    </div>
+
+    <script>
+        const aspectRatio = 1;
+
+        const windowWidth = 480;
+        const fps = 30;
+        const windowHeight = windowWidth / aspectRatio;
+
+        let resolution = windowWidth;
+
+        let canvas = document.getElementsByTagName("canvas")[0];
+        canvas.width = windowWidth;
+        canvas.height = windowHeight;
+
+        let ctx = canvas.getContext("2d");
+
+        ctx.windowWidth = resolution;
+        ctx.windowHeight = resolution;
+
+
+        function degreesToRadians(degrees) {
+            var pi = Math.PI;
+            return degrees * (pi / 180);
+        }
+
+        function radiansToDegrees(radians) {
+            var pi = Math.PI;
+            return radians * (180 / pi);
+        }
+        function distance(x1, y1, z1, x2, y2, z2) {
+            return Math.sqrt(Math.pow(x1 - x2, 2) + Math.pow(y1 - y2, 2) + Math.pow(z1 - z2, 2))
+        }
+
+        function vectorDistance(vector1, vector2) {
+            return distance(vector1[0], vector1[1], vector1[2], vector2[0], vector2[1], vector2[2]);
+        }
+
+        function magnitude(x, y, z) {
+            return distance(0, 0, 0, x, y, z);
+        }
+
+        function vectorMagnitude(vector) {
+            return vectorDistance([0, 0, 0], vector);
+        }
+
+
+        class Vector3 {
+            constructor(x = 0, y = 0, z = 0) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+
+            }
+            length() {
+                return magnitude(this.x, this.y, this.z);
+            }
+            scale(n) {
+                let v = new Vector3(this.x * n, this.y * n, this.z * n);
+                return v;
+            }
+            neg() {
+                return this.scale(-1);
+            }
+            normalize() {
+                return this.scale(1 / this.length());
+            }
+            add(v) {
+                return new Vector3(this.x + v.x, this.y + v.y, this.z + v.z);
+            }
+            subtract(v) {
+                return this.add(v.neg());
+            }
+            crossProduct(v) {
+                return new Vector3(this.y * v.z - this.z * v.y, this.z * v.x - this.x * v.z, this.x * v.y - this.y * v.x);
+            }
+            dotProduct(v) {
+                return this.x * v.x + this.y * v.y + this.z * v.z;
+            }
+            angleBetween(v) {
+                let cosTheta = this.dotProduct(v) / (this.length() * v.length());
+                let theta = Math.acos(cosTheta);
+                return theta;
+            }
+            reflect(v) {
+                var dot = this.dotProduct(v);
+                return this.subtract(v.scale(2 * dot));
+            }
+
+        }
+        const VECTOR_UP = new Vector3(0, 1, 0);
+
+
+        let scene = {}
+
+        scene.camera = {
+            // position: new Vector3(1, 1, -1),
+            position: new Vector3(0, 0, 10).scale(2),
+            point: new Vector3(0, 0, 0),
+            fov: 25
+        }
+
+
+
+        scene.objects = [
+            {
+                type: "sphere",
+                position: new Vector3(5, 0, 0),
+                radius: 1,
+                color: new Vector3(255, 200, 85),
+                specular: 1,
+                lambert: .7,
+                ambient: 0.05
+            },
+            {
+                type: "sphere",
+                position: new Vector3(-2, 1.5, 1.5),
+                radius: 3,
+                color: new Vector3(255, 255, 30),
+                specular: 1,
+                lambert: .5,
+                ambient: 0
+            },
+            {
+                type: "sphere",
+                position: new Vector3(0, 0, 0),
+                radius: 6,
+                color: new Vector3(43, 43, 43),
+                specular: 1,
+                lambert: 1,
+                ambient: 0
+            },
+            {
+                type: "sphere",
+                position: new Vector3(0, 0, 0),
+                radius: .5,
+                color: new Vector3(255, 255, 0),
+                specular: 1,
+                lambert: 1,
+                ambient: 0,
+            }
+        ]
+        function clamp(x, min, max) {
+            if (x < min) return min;
+            if (x > max) return max;
+            return x;
+        }
+
+        scene.lights = [
+            {
+                position: new Vector3(0, 5, 50)
+            },
+            // {
+            //     position: scene.objects[3].position
+            // }
+        ]
+
+
+
+        function render(scene) {
+
+            let camera = scene.camera;
+            let lights = scene.lights;
+            let objects = scene.objects;
+
+            let fovRad = degreesToRadians(camera.fov);
+            let cameraWidth = 2 * Math.tan(fovRad);
+            let cameraHeight = cameraWidth;
+
+            let pixelWidth = cameraWidth / (resolution);
+            let pixelHeight = pixelWidth;
+
+
+            let eyeVector = camera.point.subtract(camera.position).normalize();
+            let rightVector = eyeVector.crossProduct(VECTOR_UP).normalize();
+            let upVector = eyeVector.crossProduct(rightVector).normalize();
+
+            let imageData = ctx.createImageData(resolution, resolution);
+
+            for (let y = 0; y < resolution; y++) {
+                let upscaled = upVector.scale(y * pixelHeight - cameraHeight / 2);
+                // console.table(upscaled);
+                for (let x = 0; x < resolution; x++) {
+                    let rightscaled = rightVector.scale(x * pixelWidth - cameraWidth / 2);
+                    let scaled = rightscaled.add(upscaled)
+                    if (x == 0) {
+                        // console.log(cameraHeight);
+                        // console.log(rightscaled)
+                    }
+
+                    // console.table(rightscaled);
+                    // console.table(leftscaled);
+                    // console.log(rightVector.scale(x))
+                    // console.log(scaled);
+                    let ray = {
+                        position: camera.position,
+                        direction: eyeVector.add(scaled).normalize()
+                        // direction: eyeVector.add(rightVector.scale(x * pixelWidth - cameraWidth / 2)).add(upVector.scale(y * pixelHeight - cameraHeight / 2)).normalize()
+
+                    }
+                    if (new Date().getTime() % 50 === 0) {
+                        // console.log(ray.direction);
+                    }
+                    color = (trace(ray, scene, 0));
+                    let index = 4 * (x + y * resolution);
+                    imageData.data[index + 0] = color.x;
+                    imageData.data[index + 1] = color.y;
+                    imageData.data[index + 2] = color.z;
+                    imageData.data[index + 3] = 255;
+
+
+                }
+            }
+            ctx.putImageData(imageData, (windowWidth - resolution) / 2, (windowHeight - resolution) / 2);
+            // return imageData;
+
+
+
+
+        }
+
+        function trace(ray, scene, depth) {
+            if (depth > 3) return new Vector3();
+            let camera = scene.camera;
+            let objects = scene.objects;
+            let intersection = intersectWithScene(scene, ray);
+            let object = intersection[0];
+            let dist = intersection[1];
+
+            if (dist === Infinity) {
+                return new Vector3(43, 43, 43);
+            }
+            if (object.emission) {
+
+                return object.color;
+            }
+            let pointOfIntersection = ray.position.add(ray.direction.scale(dist));
+            let lambert = 0;
+            let finalColor = new Vector3();
+            let specularColor = new Vector3();
+            for (const light of scene.lights) {
+                let visible = isLightVisible(pointOfIntersection, scene, light);
+                if (light == scene.lights[1]) {
+                    // console.log("heyyea")
+                }
+                // let visible = true;
+                let normal = sphereNormal(object, pointOfIntersection);
+                // console.log(visible);
+                if (visible) {
+                    if (new Date().getDate() % 10 === 0) {
+                        console.log("YO")
+                    }
+                    let vecToLight = ray.position.subtract(light.position).normalize();
+                    let a = normal.dotProduct(vecToLight);
+                    if (a > 0) lambert += a;
+                }
+                let reflectionRay = {
+                    position: pointOfIntersection,
+                    direction: ray.direction.reflect(normal)
+                }
+                // console.log(reflectionRay)
+                let reflectedColor = trace(reflectionRay, scene, depth + 1);
+                specularColor = specularColor.add(reflectedColor.scale(object.specular));
+            }
+            lambert = Math.min(lambert, 1);
+            finalColor = object.color.add(specularColor).scale(lambert * object.lambert).add(object.color.scale(object.ambient));
+            return finalColor;
+            // return dist;
+
+        }
+
+        function isLightVisible(position, scene, light) {
+            let intersection = intersectWithScene(scene, { position: position, direction: light.position.subtract(position).normalize() })
+            let dist = intersection[1];
+            let distToLight = light.position.subtract(position).length();
+            if (intersection[0] != null && intersection[0].emission) {
+                // console.log("Yay")
+                return true;
+            }
+
+            return distToLight - dist < -0.0005;
+        }
+
+        function sphereIntersection(sphere, ray) {
+            // if(!ray){
+            // console.log(ray.position);
+            // }
+            const vecToSphere = sphere.position.subtract(ray.position);
+            const distToSphere = vecToSphere.length();
+
+            const lengthOfRay = ray.direction.dotProduct(vecToSphere);
+
+            const discriminant = sphere.radius * sphere.radius - (distToSphere * distToSphere - lengthOfRay * lengthOfRay)
+
+            if (discriminant < 0) {
+                return Infinity;
+            }
+
+            let distToSphereSurface = lengthOfRay - Math.sqrt(discriminant);
+            return distToSphereSurface;
+        }
+
+        function sphereNormal(sphere, point) {
+            // console.log(sphere.position.subtract(point));
+            return sphere.position.subtract(point).normalize();
+        }
+
+        function intersectWithScene(scene, ray) {
+            const objects = scene.objects;
+            let shortestDist = Infinity;
+            let closestObject = null;
+            for (const o of objects) {
+                const intersectionPoint = sphereIntersection(o, ray);
+
+                if (intersectionPoint < shortestDist && intersectionPoint > -0.005) {
+                    color = o.color;
+
+                    shortestDist = intersectionPoint;
+                    closestObject = o;
+                }
+            }
+            return [closestObject, shortestDist];
+        }
+
+        render(scene);
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        let n = 80
+        async function loop() {
+            let startTime = new Date().getTime();
+            const msPerFrame = 1000 / fps;
+            scene.objects[1].position.z = 8;
+            scene.objects[1].position.x = -2;
+            scene.objects[1].position.y = -5;
+
+
+            scene.objects[0].position.z = 8 * Math.sin(degreesToRadians(n));
+            scene.objects[0].position.x = 5 * Math.cos(degreesToRadians(n - 25));
+            scene.objects[0].position.y = -2 * Math.cos(degreesToRadians(2 * n + 25));
+
+            scene.objects[3].position.x = scene.objects[0].position.x + Math.sin(degreesToRadians(n)) * 1.5
+            scene.objects[3].position.z = scene.objects[0].position.z + Math.cos(degreesToRadians(n)) * 1.5
+            scene.objects[3].position.y = scene.objects[0].position.y + Math.sin(degreesToRadians(n)) * Math.sin(degreesToRadians(n)) * 1.5
+
+            n = 50;
+            render(scene);
+            // requestAnimationFrame(loop);
+            let endTime = new Date().getTime();
+            let elapsedTime = endTime - startTime;
+            await sleep(msPerFrame - elapsedTime);
+            // loop();
+        }
+// 
+        loop();
+
+
+
+    </script>
+</body>
+
+</html>
